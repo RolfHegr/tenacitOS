@@ -31,13 +31,8 @@ async function checkUrl(url: string, timeoutMs = 5000): Promise<{ status: 'up' |
 }
 
 async function checkSystemdService(name: string): Promise<ServiceCheck> {
-  try {
-    const { stdout } = await execAsync(`systemctl is-active ${name} 2>/dev/null`);
-    const active = stdout.trim() === 'active';
-    return { name, status: active ? 'up' : 'down', details: stdout.trim() };
-  } catch {
-    return { name, status: 'down', details: 'service not found' };
-  }
+  // systemd/systemctl is not available on macOS — return graceful fallback
+  return { name, status: 'unknown', details: 'systemd not available on macOS' };
 }
 
 async function checkPm2Service(name: string): Promise<ServiceCheck> {

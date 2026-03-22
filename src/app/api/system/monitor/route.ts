@@ -85,49 +85,37 @@ export async function GET() {
     let diskUsed = 0;
     let diskFree = 100;
     try {
-      const { stdout } = await execAsync("df -BG / | tail -1");
+      // Use df -k (KB) for cross-platform compatibility (macOS + Linux)
+      const { stdout } = await execAsync("df -k / | tail -1");
       const parts = stdout.trim().split(/\s+/);
-      diskTotal = parseInt(parts[1].replace("G", ""));
-      diskUsed = parseInt(parts[2].replace("G", ""));
-      diskFree = parseInt(parts[3].replace("G", ""));
+      diskTotal = Math.round(parseInt(parts[1]) / 1024 / 1024); // KB -> GB
+      diskUsed = Math.round(parseInt(parts[2]) / 1024 / 1024);
+      diskFree = Math.round(parseInt(parts[3]) / 1024 / 1024);
     } catch (error) {
       console.error("Failed to get disk stats:", error);
     }
     const diskPercent = (diskUsed / diskTotal) * 100;
 
-    // ── Network (real stats from /proc/net/dev) ───────────────────────────────
+    // ── Network stats (macOS-compatible via netstat) ──────────────────────────
     let network = { rx: 0, tx: 0 };
     try {
-      const { readFileSync } = await import('fs');
-      
-      function readNetStats(): { rx: number; tx: number; ts: number } {
-        const netDev = readFileSync('/proc/net/dev', 'utf-8');
-        const lines = netDev.trim().split('\n').slice(2);
-        let rx = 0, tx = 0;
-        for (const line of lines) {
-          const parts = line.trim().split(/\s+/);
-          const iface = parts[0].replace(':', '');
-          if (iface === 'lo') continue;
-          rx += parseInt(parts[1]) || 0;
-          tx += parseInt(parts[9]) || 0;
-        }
-        return { rx, tx, ts: Date.now() };
-      }
-      
-      const current = readNetStats();
-      
-      // Use module-level cache for previous reading
+      // netstat -ib works on both macOS and Linux
+      const { stdout: netOut } = await execAsync("netstat -ib 2>/dev/null | awk 'NR>1 && $1 !~ /lo/ && $1 !~ /^Name/ {rx+=$7; tx+=$10} END {print rx, tx}'");
+      const parts = netOut.trim().split(/\s+/);
+      const rx = parseInt(parts[0]) || 0;
+      const tx = parseInt(parts[1]) || 0;
+      const now = Date.now();
       if ((global as Record<string, unknown>).__netPrev) {
         const prev = (global as Record<string, unknown>).__netPrev as { rx: number; tx: number; ts: number };
-        const dtSec = (current.ts - prev.ts) / 1000;
+        const dtSec = (now - prev.ts) / 1000;
         if (dtSec > 0) {
           network = {
-            rx: parseFloat(Math.max(0, (current.rx - prev.rx) / 1024 / 1024 / dtSec).toFixed(3)),
-            tx: parseFloat(Math.max(0, (current.tx - prev.tx) / 1024 / 1024 / dtSec).toFixed(3)),
+            rx: parseFloat(Math.max(0, (rx - prev.rx) / 1024 / 1024 / dtSec).toFixed(3)),
+            tx: parseFloat(Math.max(0, (tx - prev.tx) / 1024 / 1024 / dtSec).toFixed(3)),
           };
         }
       }
-      (global as Record<string, unknown>).__netPrev = current;
+      (global as Record<string, unknown>).__netPrev = { rx, tx, ts: now };
     } catch (error) {
       console.error("Failed to get network stats:", error);
     }
@@ -135,25 +123,14 @@ export async function GET() {
     // ── Services ─────────────────────────────────────────────────────────────
     const services: ServiceEntry[] = [];
 
-    // 1. Systemd services
+    // 1. Systemd services — not available on macOS, return graceful fallback
     for (const name of SYSTEMD_SERVICES) {
-      try {
-        const { stdout } = await execAsync(`systemctl is-active ${name} 2>/dev/null || true`);
-        const rawStatus = stdout.trim(); // "active" | "inactive" | "failed" | ...
-        services.push({
-          name,
-          status: rawStatus,
-          description: SERVICE_DESCRIPTIONS[name] ?? name,
-          backend: "systemd",
-        });
-      } catch {
-        services.push({
-          name,
-          status: "unknown",
-          description: SERVICE_DESCRIPTIONS[name] ?? name,
-          backend: "systemd",
-        });
-      }
+      services.push({
+        name,
+        status: "unknown",
+        description: (SERVICE_DESCRIPTIONS[name] ?? name) + " (systemd N/A on macOS)",
+        backend: "systemd",
+      });
     }
 
     // 2. PM2 services — single call, parse JSON
@@ -252,32 +229,19 @@ export async function GET() {
       console.error("Failed to get Tailscale status:", error);
     }
 
-    // ── Firewall (UFW) ────────────────────────────────────────────────────────
+    // ── Firewall (macOS pf, not UFW) ──────────────────────────────────────────
     let firewallActive = false;
     const firewallRulesList: FirewallRule[] = [];
     const staticFirewallRules: FirewallRule[] = [
       { port: "80/tcp", action: "ALLOW", from: "Anywhere", comment: "Public HTTP" },
       { port: "443/tcp", action: "ALLOW", from: "Anywhere", comment: "Public HTTPS" },
-      { port: "3000", action: "ALLOW", from: "Tailscale (100.64.0.0/10)", comment: "Mission Control via Tailscale" },
-      { port: "22", action: "ALLOW", from: "Tailscale (100.64.0.0/10)", comment: "SSH via Tailscale only" },
+      { port: "3000", action: "ALLOW", from: "localhost", comment: "Mission Control" },
+      { port: "22", action: "ALLOW", from: "Anywhere", comment: "SSH" },
     ];
     try {
-      const { stdout: ufwStatus } = await execAsync("ufw status numbered 2>/dev/null || true");
-      if (ufwStatus.includes("Status: active")) {
-        firewallActive = true;
-        const lines = ufwStatus.split("\n");
-        for (const line of lines) {
-          const match = line.match(/\[\s*\d+\]\s+([\w/:]+)\s+(\w+)\s+(\S+)\s*(#?.*)$/);
-          if (match) {
-            firewallRulesList.push({
-              port: match[1].trim(),
-              action: match[2].trim(),
-              from: match[3].trim(),
-              comment: match[4].replace("#", "").trim(),
-            });
-          }
-        }
-      }
+      // macOS uses pf (packet filter), not ufw
+      const { stdout: pfStatus } = await execAsync("pfctl -s info 2>/dev/null || true");
+      firewallActive = pfStatus.toLowerCase().includes("enabled");
     } catch (error) {
       console.error("Failed to get firewall status:", error);
     }

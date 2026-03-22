@@ -26,7 +26,7 @@ export interface AgentConfig {
 export const AGENTS: AgentConfig[] = [
   {
     id: "main",
-    name: process.env.NEXT_PUBLIC_AGENT_NAME || "Mission Control",
+    name: process.env.NEXT_PUBLIC_AGENT_NAME || "Rolfy",
     emoji: process.env.NEXT_PUBLIC_AGENT_EMOJI || "🦞",
     position: [0, 0, 0], // Center — main desk
     color: "#FFCC00",

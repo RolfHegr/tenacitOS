@@ -48,13 +48,13 @@ async function runAction(action: string): Promise<ActionResult> {
       }
 
       case 'restart-gateway': {
-        const { stdout, stderr } = await execAsync('systemctl restart openclaw-gateway 2>&1 || echo "Service not found"');
-        output = stdout || stderr || 'Restart command executed';
-        // Also check status
+        // systemctl not available on macOS — try openclaw gateway restart instead
         try {
-          const { stdout: status } = await execAsync('systemctl is-active openclaw-gateway 2>&1 || echo "unknown"');
-          output += `\nStatus: ${status.trim()}`;
-        } catch {}
+          const { stdout, stderr } = await execAsync('openclaw gateway restart 2>&1 || echo "Could not restart gateway"');
+          output = stdout || stderr || 'Restart command executed';
+        } catch {
+          output = 'systemd not available on macOS. Use: openclaw gateway restart';
+        }
         break;
       }
 
@@ -72,10 +72,12 @@ async function runAction(action: string): Promise<ActionResult> {
       case 'usage-stats': {
         const { stdout: du } = await execAsync(`du -sh "${WORKSPACE}" 2>/dev/null || echo "N/A"`);
         const { stdout: df } = await execAsync('df -h / | tail -1');
-        const { stdout: mem } = await execAsync('free -h | head -2');
-        const { stdout: cpu } = await execAsync("top -bn1 | grep 'Cpu(s)' | head -1");
-        const { stdout: uptime } = await execAsync('uptime -p');
-        output = `Workspace: ${du.trim()}\n\nDisk: ${df.trim()}\n\nMemory:\n${mem.trim()}\n\nCPU: ${cpu.trim()}\n\nUptime: ${uptime.trim()}`;
+        // Use vm_stat on macOS, free on Linux
+        const { stdout: mem } = await execAsync('vm_stat 2>/dev/null | head -5 || free -h 2>/dev/null | head -2 || echo "N/A"');
+        // top on macOS doesn't support -bn1; use uptime for load average
+        const { stdout: loadAvg } = await execAsync('uptime 2>/dev/null || echo "N/A"');
+        const { stdout: uptime } = await execAsync('uptime 2>/dev/null | head -1 || echo "N/A"');
+        output = `Workspace: ${du.trim()}\n\nDisk: ${df.trim()}\n\nMemory:\n${mem.trim()}\n\nLoad: ${loadAvg.trim()}\n\nUptime: ${uptime.trim()}`;
         break;
       }
 
@@ -85,10 +87,9 @@ async function runAction(action: string): Promise<ActionResult> {
         const pm2services = ['classvault', 'content-vault', 'brain'];
         const results: string[] = [];
 
+        // systemd not available on macOS — skip systemd checks
         for (const svc of services) {
-          const { stdout } = await execAsync(`systemctl is-active ${svc} 2>/dev/null || echo "inactive"`);
-          const status = stdout.trim();
-          results.push(`${status === 'active' ? '✅' : '❌'} ${svc}: ${status}`);
+          results.push(`⚠️ ${svc}: systemd not available on macOS`);
         }
 
         try {

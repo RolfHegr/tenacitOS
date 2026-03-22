@@ -39,20 +39,19 @@ async function pm2Action(name: string, action: string): Promise<string> {
 }
 
 async function systemdAction(name: string, action: string): Promise<string> {
-  if (!ALLOWED_SERVICES_SYSTEMD.includes(name)) {
-    throw new Error(`Service "${name}" not in allowlist`);
-  }
-  if (!['restart', 'stop', 'start', 'logs'].includes(action)) {
-    throw new Error(`Invalid action "${action}"`);
-  }
-
+  // systemd/systemctl/journalctl are not available on macOS
   if (action === 'logs') {
-    const { stdout } = await execAsync(`journalctl -u "${name}" -n 100 --no-pager 2>&1`);
-    return stdout;
+    // Try reading OpenClaw log files as fallback
+    const openclawDir = process.env.OPENCLAW_DIR || '/Users/rolfy/.openclaw';
+    try {
+      const logPath = `${openclawDir}/logs/${name}.log`;
+      const { stdout } = await execAsync(`tail -100 "${logPath}" 2>/dev/null || echo "No log file found at ${logPath}"`);
+      return stdout;
+    } catch {
+      return `Logs not available on macOS (systemd/journalctl not present). Check ${openclawDir}/logs/ manually.`;
+    }
   }
-
-  const { stdout } = await execAsync(`systemctl ${action} "${name}" 2>&1`);
-  return stdout || `${action} executed successfully`;
+  return `Action "${action}" on "${name}" is not available on macOS (systemd not present).`;
 }
 
 async function dockerAction(id: string, action: string): Promise<string> {

@@ -32,7 +32,11 @@ export async function GET(request: NextRequest) {
       if (backend === 'pm2') {
         cmd = ['pm2', 'logs', service, '--lines', '50', '--nocolor'];
       } else {
-        cmd = ['journalctl', '-u', service, '-n', '50', '--no-pager', '-f'];
+        // journalctl is Linux-only. On macOS, fall back to OpenClaw log files.
+        const openclawDir = process.env.OPENCLAW_DIR || '/Users/rolfy/.openclaw';
+        const logFile = `${openclawDir}/logs/${service}.log`;
+        send(`[info] systemd/journalctl not available on macOS. Trying ${logFile}`);
+        cmd = ['tail', '-n', '50', '-f', logFile];
       }
 
       const proc = spawn(cmd[0], cmd.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
